@@ -1,4 +1,4 @@
-import { HydratedDocument } from "mongoose";
+import { HydratedDocument, Types } from "mongoose";
 import { IShift, Shift } from "../models/Shift";
 import { ISignup, Signup } from "../models/Signup";
 import { AppError } from "../utils/AppError";
@@ -68,6 +68,43 @@ async function explainFailedReserve(shiftId: string): Promise<never> {
 }
 
 /**
+ * Throws SCHEDULE_CONFLICT when the volunteer already holds a seat on a shift
+ * that overlaps the current shift
+ *
+ * The signup rows only store shift ids, so the times have to be read from the
+ * shifts collection in a second query.
+ */
+async function assertNoScheduleConflict(
+  volunteerId: string,
+  shift: HydratedDocument<IShift>
+): Promise<void> {
+  const activeSignups = await Signup.find({ volunteerId, status: "confirmed" });
+
+  const heldShiftIds: Types.ObjectId[] = [];
+  for (const activeSignup of activeSignups) {
+    heldShiftIds.push(activeSignup.shiftId);
+  }
+
+  const conflictingShift = await Shift.findOne({
+    _id: { $in: heldShiftIds },
+    status: "open",
+    startTime: { $lt: shift.endTime },
+    endTime: { $gt: shift.startTime },
+  });
+
+  if (conflictingShift === null) {
+    return;
+  }
+
+  throw new AppError(
+    "SCHEDULE_CONFLICT",
+    409,
+    `This volunteer is already confirmed for "${conflictingShift.title}", which overlaps this shift.`,
+    { conflictingShiftId: conflictingShift.id }
+  );
+}
+
+/**
  * Claims a seat on a shift for a volunteer, enforcing every signup rule.
  * Returns the confirmed signup.
  */
@@ -106,6 +143,10 @@ export async function createSignup(
       "This volunteer already holds a seat on this shift."
     );
   }
+
+  // Checked before the seat is reserved, so a conflict never has to give one
+  // back.
+  await assertNoScheduleConflict(volunteerId, shift);
 
   const reservedShift = await reserveSeat(shiftId);
 

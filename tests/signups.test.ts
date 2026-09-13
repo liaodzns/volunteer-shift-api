@@ -268,3 +268,114 @@ describe("GET /api/volunteers/:id/signups", () => {
     expect(response.status).toBe(404);
   });
 });
+
+describe("overlapping shifts", () => {
+  /** Builds a shift running between two offsets, in hours from now. */
+  async function insertShiftBetween(
+    startHours: number,
+    endHours: number,
+    title = "Overlapping shift"
+  ) {
+    return insertShift({
+      title,
+      startTime: new Date(Date.now() + startHours * HOUR),
+      endTime: new Date(Date.now() + endHours * HOUR),
+    });
+  }
+
+  it("rejects a shift that overlaps one the volunteer already holds", async () => {
+    const morning = await insertShiftBetween(24, 27, "Morning sorting");
+    const midday = await insertShiftBetween(26, 29, "Midday sorting");
+    const volunteer = await insertVolunteer();
+
+    const first = await request(app)
+      .post(`/api/shifts/${morning.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    expect(first.status).toBe(201);
+
+    const second = await request(app)
+      .post(`/api/shifts/${midday.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe("SCHEDULE_CONFLICT");
+    expect(second.body.error.details.conflictingShiftId).toBe(morning.id);
+
+    // The rejected attempt must not have taken a seat on the second shift.
+    const updatedMidday = await Shift.findById(midday._id);
+    expect(updatedMidday?.confirmedCount).toBe(0);
+  });
+
+  it("allows a shift that starts exactly when the held one ends", async () => {
+    const morning = await insertShiftBetween(24, 27, "Morning sorting");
+    const afternoon = await insertShiftBetween(27, 30, "Afternoon sorting");
+    const volunteer = await insertVolunteer();
+
+    await request(app)
+      .post(`/api/shifts/${morning.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    const response = await request(app)
+      .post(`/api/shifts/${afternoon.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    expect(response.status).toBe(201);
+
+    const updatedAfternoon = await Shift.findById(afternoon._id);
+    expect(updatedAfternoon?.confirmedCount).toBe(1);
+  });
+
+  it("allows an overlapping shift once the first signup is cancelled", async () => {
+    const morning = await insertShiftBetween(24, 27, "Morning sorting");
+    const midday = await insertShiftBetween(26, 29, "Midday sorting");
+    const volunteer = await insertVolunteer();
+
+    const created = await request(app)
+      .post(`/api/shifts/${morning.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    await request(app).patch(`/api/signups/${created.body._id}/cancel`);
+
+    const response = await request(app)
+      .post(`/api/shifts/${midday.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    expect(response.status).toBe(201);
+  });
+
+  it("only blocks the volunteer who holds the overlapping shift", async () => {
+    const morning = await insertShiftBetween(24, 27, "Morning sorting");
+    const midday = await insertShiftBetween(26, 29, "Midday sorting");
+    const ann = await insertVolunteer("ann@example.com");
+    const ben = await insertVolunteer("ben@example.com");
+
+    await request(app)
+      .post(`/api/shifts/${morning.id}/signups`)
+      .send({ volunteerId: ann.id });
+
+    const response = await request(app)
+      .post(`/api/shifts/${midday.id}/signups`)
+      .send({ volunteerId: ben.id });
+
+    expect(response.status).toBe(201);
+  });
+
+  it("ignores a held shift that was cancelled by the organiser", async () => {
+    const morning = await insertShiftBetween(24, 27, "Morning sorting");
+    const midday = await insertShiftBetween(26, 29, "Midday sorting");
+    const volunteer = await insertVolunteer();
+
+    await request(app)
+      .post(`/api/shifts/${morning.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    await request(app).delete(`/api/shifts/${morning.id}`);
+
+    const response = await request(app)
+      .post(`/api/shifts/${midday.id}/signups`)
+      .send({ volunteerId: volunteer.id });
+
+    expect(response.status).toBe(201);
+  });
+});
