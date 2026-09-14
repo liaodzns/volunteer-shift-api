@@ -7,8 +7,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "jest",
-    "test:watch": "jest --watch",
+    "test": "node scripts/run-jest.js",
+    "test:watch": "node scripts/run-jest.js --watch",
     "seed": "tsx src/seed.ts"
   },
   "keywords": [],
